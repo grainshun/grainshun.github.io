@@ -8,6 +8,8 @@
     <!-- 后台复用前台主样式，再叠加后台专用样式 -->
     <link rel="stylesheet" href="assets/css/style.css" />
     <link rel="stylesheet" href="assets/css/admin.css" />
+    <!-- KaTeX 样式：后台预览渲染数学公式用（本地，离线可用） -->
+    <link rel="stylesheet" href="assets/vendor/katex/katex.min.css" />
   </head>
   <body>
     <!-- 登录门禁：未登录时显示，登录成功后由 JS 隐藏（hidden） -->
@@ -95,8 +97,22 @@
       </div>
     </div>
 
-    <!-- 后台脚本：data.js 提供初始内容回退，admin.js 负责登录/渲染/保存 -->
+    <!-- 文章预览弹窗：Word 风格的干净整页文档视图 -->
+    <div class="modal" id="previewModal" role="dialog" aria-modal="true" hidden>
+      <div class="modal-mask" data-preview-close></div>
+      <div class="modal-panel preview-panel">
+        <div class="preview-bar">
+          <span class="preview-title">文档预览</span>
+          <button class="modal-close" id="previewCloseBtn" type="button" aria-label="关闭预览"></button>
+        </div>
+        <article class="doc-preview" id="previewBody"></article>
+      </div>
+    </div>
+
+    <!-- 后台脚本：data.js 提供初始内容回退；KaTeX 供后台预览渲染公式；admin.js 放最后 -->
     <script src="assets/js/data.js"></script>
+    <script src="assets/vendor/katex/katex.min.js"></script>
+    <script src="assets/vendor/katex/contrib/auto-render.min.js"></script>
     <script src="assets/js/admin.js"></script>
   </body>
 </html>
