@@ -109,7 +109,20 @@
   const loginScreen = $("#loginScreen"); // 登录门禁遮罩
   const adminPanel = $("#adminPanel");   // 登录后的后台主体
 
-  // 处理登录提交：用 GitHub Token 验证，成功则载入内容并进入后台
+  // 用 token 读取仓库里的 data.js：既能验证 token 有效性（无效会 401），又顺带载入内容。
+  // 相比校验 /user，这样只需 repo（公开仓库甚至 public_repo）权限即可，门槛更低。
+  async function loginWithToken(t, remember) {
+    const probe = await ghApi(
+      "/repos/" + GH_OWNER + "/" + GH_REPO + "/contents/" + GH_DATA_PATH + "?ref=" + GH_BRANCH
+    );
+    if (probe.status === 401 || probe.status === 403) throw new Error("TOKEN_INVALID");
+    if (probe.status !== 200 || !probe.json) throw new Error("PROBE_FAIL:" + probe.status);
+    if (remember) rememberToken(t); else ghToken = t;
+    currentSha = probe.json.sha; // 复用本次读取结果，省一次请求
+    DATA = parseDataJs(base64ToUtf8(probe.json.content));
+    showAdmin();
+  }
+  // 处理登录提交：用 GitHub Token 验证并载入内容，进入后台
   async function attempt() {
     const t = ($("#loginToken").value || "").trim();
     if (!t) {
@@ -118,17 +131,16 @@
     }
     const remember = $("#rememberMe") && $("#rememberMe").checked;
     try {
-      // 先用 token 调 /user 验证有效性（需 repo 权限）
-      const who = await ghApi("/user");
-      if (who.status !== 200) {
-        $("#loginError").textContent = "Token 无效或无权限，请检查（需 repo 权限）";
-        return;
-      }
-      rememberToken(t); // 存入内存/会话
-      await loadContent();
-      showAdmin();
+      await loginWithToken(t, remember);
     } catch (e) {
-      $("#loginError").textContent = "网络错误，无法连接 GitHub";
+      const m = String((e && e.message) || "");
+      if (m.indexOf("TOKEN_INVALID") === 0) {
+        $("#loginError").textContent = "Token 无效或无权限，请检查（需对仓库有写权限）";
+      } else if (m.indexOf("PROBE_FAIL") === 0) {
+        $("#loginError").textContent = "无法访问仓库（" + m.split(":")[1] + "），请稍后重试";
+      } else {
+        $("#loginError").textContent = "网络错误，无法连接 GitHub";
+      }
     }
   }
 
@@ -1118,14 +1130,8 @@
     try {
       const saved = (function () { try { return sessionStorage.getItem("anhuann_gh_token"); } catch (e) { return ""; } })();
       if (saved) {
-        rememberToken(saved);
-        const who = await ghApi("/user");
-        if (who.status === 200) {
-          await loadContent();
-          showAdmin();
-        } else {
-          forgetToken();
-        }
+        try { await loginWithToken(saved, true); }
+        catch (e) { forgetToken(); }
       }
     } catch (e) {
       /* 未登录或无法连接，停留在登录页 */
