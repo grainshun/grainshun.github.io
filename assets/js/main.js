@@ -428,8 +428,7 @@
             .map((t) => `<span class="tag">${escapeHtml(t)}</span>`)
             .join("");
           return (
-            `<button class="post-item reveal" type="button" data-index="${i}" ` +
-            `style="transition-delay:${Math.min(i, 4) * 60}ms">` +
+            `<button class="post-item" type="button" data-index="${i}">` +
             `<span class="post-date">${formatDate(p.date)}</span>` +
             `<span class="post-main">` +
             `<span class="post-title">${escapeHtml(p.title)}</span>` +
