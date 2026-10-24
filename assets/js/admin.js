@@ -1,0 +1,1069 @@
+/* =========================================================
+ * Anhuann · 后台管理脚本（admin.js）
+ * ---------------------------------------------------------
+ * 负责「后台页面」的全部交互：登录、按区块渲染表单、收集表单、
+ * 保存（写回服务器）、导出 data.js、备份/恢复。
+ *
+ * 安全模型：
+ *   - 账号密码不在前端明文保存，统一交给服务器校验；
+ *   - 登录成功后服务器下发 HttpOnly Cookie 会话，本脚本只负责带 Cookie 发请求；
+ *   - 所有读写都走 /api/* 接口（见 server.js）。
+ *
+ * 数据流：
+ *   登录 -> GET /api/content 拉取内容 -> 渲染成表单
+ *   修改表单 -> 点保存 -> POST /api/content 写回服务器 -> 服务器更新 data.js
+ *   （保存前服务器会自动备份；也可点「恢复备份」回滚，或「导出 data.js」下载）
+ *
+ * 体验特性：
+ *   - Ctrl+S / Cmd+S 快捷保存
+ *   - 有未保存更改时底部提示橙色文字，关闭页面前浏览器会确认
+ *   - 保存前做字段校验（标题/日期/邮箱等），不合法则中止并提示
+ *   - 删除条目有二次确认；保存成功/失败有 toast 提示
+ * ========================================================= */
+(function () {
+  "use strict"; // 开启严格模式，避免意外创建全局变量
+
+  // 两个极简选择器： $(选择器) 取单个，$$(选择器) 取数组（便于 forEach）
+  const $ = (s, r) => (r || document).querySelector(s);
+  const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+
+  // 通用深拷贝：用 JSON 往返实现（仅用于纯数据对象，函数/循环引用不适用）
+  function clone(x) {
+    return JSON.parse(JSON.stringify(x));
+  }
+
+  /* ---------- 当前编辑中的数据（来自服务器） ---------- */
+  let DATA = null; // 结构：{ site, about, socials, posts }，渲染与收集都以它为基准
+
+  // 从服务器拉取最新内容，存进 DATA
+  async function loadContent() {
+    const res = await fetch("/api/content", { credentials: "same-origin" });
+    if (!res.ok) throw new Error("load failed");
+    DATA = await res.json();
+  }
+
+  /* ---------- 登录相关 DOM 引用 ---------- */
+  const loginScreen = $("#loginScreen"); // 登录门禁遮罩
+  const adminPanel = $("#adminPanel");   // 登录后的后台主体
+
+  // 处理登录提交：把账号密码发给服务器，成功则载入内容并进入后台
+  async function attempt() {
+    const u = $("#loginUser").value.trim();
+    const p = $("#loginPass").value;
+    const remember = $("#rememberMe") && $("#rememberMe").checked; // 是否延长会话
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        credentials: "same-origin", // 让登录 Cookie 随同源请求带上
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user: u, pass: p, remember }),
+      });
+      if (res.ok) {
+        await loadContent(); // 登录成功 -> 拉内容
+        showAdmin();         // 进入后台
+      } else {
+        // 服务器返回 401 等：取出错误文案展示
+        const j = await res.json().catch(() => ({}));
+        $("#loginError").textContent = j.error || "登录失败";
+      }
+    } catch (e) {
+      // 网络层失败（多半是服务器没启动）
+      $("#loginError").textContent = "网络错误，请确认服务器已启动（node server.js）";
+    }
+  }
+
+  // 登录成功后：隐藏登录遮罩，显示后台，并渲染各区块表单
+  function showAdmin() {
+    loginScreen.hidden = true;
+    adminPanel.hidden = false;
+    renderAll();
+  }
+
+  // 登出：调用服务器清除会话，并回到登录页（清空密码框与错误提示）
+  async function logout() {
+    try {
+      await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
+    } catch (e) {}
+    adminPanel.hidden = true;
+    loginScreen.hidden = false;
+    $("#loginPass").value = "";
+    $("#loginError").textContent = "";
+  }
+
+  // 绑定按钮/回车事件
+  $("#loginBtn").addEventListener("click", attempt);
+  $("#loginPass").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") attempt(); // 密码框回车即登录
+  });
+  $("#logoutBtn").addEventListener("click", logout);
+
+  /* ---------- 通用 UI 小工具 ---------- */
+  // 创建元素：tag 标签名，cls 类名，props 直接挂到元素上的属性（如 type/value）
+  function el(tag, cls, props) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (props) Object.assign(e, props);
+    return e;
+  }
+  // 包装成一个「带标签的字段」：label 文字 + 控件
+  function field(labelText, control) {
+    const f = el("label", "field");
+    const s = el("span", "field-label");
+    s.textContent = labelText;
+    f.appendChild(s);
+    f.appendChild(control);
+    return f;
+  }
+  // 单行文本输入框
+  function textInput(val) {
+    const i = el("input", "input");
+    i.type = "text";
+    i.value = val == null ? "" : String(val);
+    return i;
+  }
+  // 多行文本域；若值是数组（如正文段落）则用换行符拼成多行文本
+  function textareaInput(val, rows) {
+    const t = el("textarea", "input");
+    t.rows = rows || 4;
+    t.value = Array.isArray(val) ? val.join("\n") : val == null ? "" : String(val);
+    return t;
+  }
+  // 在文本域光标处（或选中文字两侧）插入 Markdown 标记
+  function insertMd(ta, pre, post) {
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    const v = ta.value;
+    const sel = v.slice(s, e) || "文字";
+    ta.value = v.slice(0, s) + pre + sel + post + v.slice(e);
+    const ns = s + pre.length, ne = ns + sel.length;
+    ta.focus();
+    ta.setSelectionRange(ns, ne);
+    ta.dispatchEvent(new Event("input"));
+  }
+  // Markdown 编辑器：工具栏 + 文本域 + 实时预览，写文章/故事更省心
+  function markdownField(labelText, value, rows) {
+    const wrap = el("div", "md-editor");
+    // 工具栏
+    const bar = el("div", "md-toolbar");
+    const tools = [
+      ["B", "加粗", "**", "**"],
+      ["I", "斜体", "*", "*"],
+      ["H", "标题", "### ", ""],
+      ["❝", "引用", "> ", ""],
+      ["•", "列表", "- ", ""],
+      ["🔗", "链接", "[", "](https://)"],
+      ["</>", "代码", "`", "`"],
+    ];
+    tools.forEach(([t, title, pre, post]) => {
+      const b = el("button", "md-btn");
+      b.type = "button";
+      b.textContent = t;
+      b.title = title;
+      b.addEventListener("click", () =>
+        insertMd(wrap.querySelector("textarea"), pre, post)
+      );
+      bar.appendChild(b);
+    });
+    // 编辑区 + 预览区
+    const ta = textareaInput(value, rows || 6);
+    ta.classList.add("md-input");
+    ta.placeholder =
+      "支持 Markdown：# 标题、**加粗**、- 列表、> 引用、[链接](url)、`代码`，以及 $公式$";
+    const prev = el("div", "md-preview md-live");
+    const render = () => { prev.innerHTML = miniMarkdown(ta.value); };
+    ta.addEventListener("input", render);
+    render();
+    const split = el("div", "md-split");
+    split.appendChild(ta);
+    split.appendChild(prev);
+    wrap.appendChild(bar);
+    wrap.appendChild(split);
+    return field(labelText, wrap);
+  }
+  // 复选框
+  function checkboxInput(val) {
+    const i = el("input");
+    i.type = "checkbox";
+    i.checked = !!val;
+    return i;
+  }
+  // 两个颜色选择器（左/右），用于社交徽章渐变
+  function colorPair(val) {
+    const wrap = el("div", "color-pair");
+    const a = el("input");
+    a.type = "color";
+    a.value = (val && val[0]) || "#E9A08C";
+    const b = el("input");
+    b.type = "color";
+    b.value = (val && val[1]) || "#D4785F";
+    wrap.appendChild(a);
+    wrap.appendChild(b);
+    return wrap;
+  }
+  // 把多行文本按行拆成数组（去空白、去空行），用于正文/标签等
+  function linesToArr(v) {
+    return v
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  /* ---------- 轻提示（toast）与「未保存」状态 ---------- */
+  // 屏幕下方自动弹出的小提示，2.2 秒后淡出；复用同一个节点
+  let toastTimer = null;
+  function toast(message) {
+    let t = $("#adminToast");
+    if (!t) {
+      t = el("div");
+      t.id = "adminToast";
+      t.className = "toast";
+      document.body.appendChild(t);
+    }
+    t.textContent = message;
+    t.classList.add("is-visible");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove("is-visible"), 2200);
+  }
+
+  let dirty = false; // 是否有未保存的更改
+  const DIRTY_TEXT = "● 有未保存的更改（Ctrl+S 保存）";
+
+  // 底部提示栏：显式传入的文字优先（如保存成功/失败）；
+  // 没传文字时，有未保存更改就显示橙色提醒，否则清空。
+  function refreshHint(text) {
+    const hint = $("#saveHint");
+    if (!hint) return;
+    if (text) {
+      hint.textContent = text;
+      hint.classList.remove("is-dirty");
+    } else if (dirty) {
+      hint.textContent = DIRTY_TEXT;
+      hint.classList.add("is-dirty");
+    } else {
+      hint.textContent = "";
+      hint.classList.remove("is-dirty");
+    }
+  }
+  // 标记为「有未保存更改」（只在第一次真正变化时刷新，避免频繁重排）
+  function markDirty() {
+    if (dirty) return;
+    dirty = true;
+    refreshHint("");
+  }
+  function clearDirty() {
+    dirty = false;
+  }
+
+  /* ---------- 渲染：站点信息 ---------- */
+  // 字段清单：[数据键名, 显示标签]；顺序即表单从上到下的顺序
+  const SITE_FIELDS = [
+    ["name", "站点名字"],
+    ["initial", "首字母"],
+    ["avatar", "头像路径"],
+    ["greeting", "首屏问候"],
+    ["tagline", "首屏标语"],
+    ["description", "首页简介"],
+    ["email", "邮箱"],
+    ["footerNote", "页脚备注"],
+  ];
+  function renderSite() {
+    const pane = $("#pane-site");
+    pane.innerHTML = ""; // 先清空，避免重复渲染
+    SITE_FIELDS.forEach(([key, label]) => {
+      let control;
+      // 首页简介用多行文本域；其余用单行输入框
+      if (key === "description") {
+        control = textareaInput(DATA.site[key], 3);
+      } else {
+        control = textInput(DATA.site[key]);
+        if (key === "initial") control.maxLength = 2; // 首字母最多 2 个字符
+      }
+      control.dataset.key = key; // 用 data-key 标记，收集时据此回填
+      pane.appendChild(field(label, control));
+    });
+  }
+
+  /* ---------- 渲染：关于我 ---------- */
+  // 单个「主题故事」编辑卡片（标题 + 正文）
+  function themeItem(t) {
+    const item = el("div", "list-item");
+    const title = textInput(t.title);
+    title.placeholder = "标题";
+    const body = markdownField("正文（支持 Markdown，右侧实时预览）", t.body, 4);
+    const del = el("button", "item-del");
+    del.type = "button";
+    del.textContent = "×";
+    del.addEventListener("click", () => {
+      if (confirm("确定删除这张主题故事卡吗？")) {
+        item.remove();
+        markDirty();
+      }
+    });
+    item.appendChild(field("标题", title));
+    item.appendChild(body);
+    item.appendChild(del);
+    return item;
+  }
+  function renderAbout() {
+    const pane = $("#pane-about");
+    pane.innerHTML = "";
+    // 引入语（单段文本域），用 data-about 标记便于收集
+    const intro = textareaInput(DATA.about.intro, 3);
+    intro.dataset.about = "intro";
+    pane.appendChild(field("引入语", intro));
+    // 主题列表容器（固定 id，收集时按它查找）
+    const list = el("div", "list");
+    list.id = "aboutThemeList";
+    DATA.about.themes.forEach((t) => list.appendChild(themeItem(t)));
+    pane.appendChild(field("主题故事（每张一个）", list));
+    // 「+ 添加主题」按钮
+    const add = el("button", "btn btn-ghost btn-sm");
+    add.type = "button";
+    add.textContent = "+ 添加主题";
+    add.addEventListener("click", () =>
+      list.appendChild(themeItem({ title: "新主题", body: ["内容"] }))
+    );
+    pane.appendChild(add);
+  }
+
+  /* ---------- 渲染：社交账号 ---------- */
+  // 单个社交账号编辑卡片
+  function socialItem(s) {
+    const item = el("div", "list-item");
+    const name = textInput(s.name);
+    name.placeholder = "显示名";
+    const handle = textInput(s.handle);
+    handle.placeholder = "账号 / handle";
+    const url = textInput(s.url);
+    url.placeholder = "跳转链接（没有留空）";
+    const icon = textInput(s.icon);
+    icon.placeholder = "图标：github / mail / x / wechat / bilibili / zhihu / douyin / globe / rss";
+    const copy = checkboxInput(s.copy);       // 是否「点击复制账号」
+    const colors = colorPair(s.color);        // 徽章渐变色
+    const del = el("button", "item-del");
+    del.type = "button";
+    del.textContent = "×";
+    del.addEventListener("click", () => {
+      if (confirm("确定删除这个社交账号吗？")) {
+        item.remove();
+        markDirty();
+      }
+    });
+
+    item.appendChild(field("名称", name));
+    item.appendChild(field("账号", handle));
+    item.appendChild(field("链接", url));
+    item.appendChild(field("图标", icon));
+    item.appendChild(field("点击复制账号", copy));
+    item.appendChild(field("徽章颜色（左/右）", colors));
+    item.appendChild(del);
+    return item;
+  }
+  function renderSocials() {
+    const pane = $("#pane-socials");
+    pane.innerHTML = "";
+    const list = el("div", "list");
+    DATA.socials.forEach((s) => list.appendChild(socialItem(s)));
+    pane.appendChild(field("社交账号", list));
+    const add = el("button", "btn btn-ghost btn-sm");
+    add.type = "button";
+    add.textContent = "+ 添加账号";
+    add.addEventListener("click", () =>
+      list.appendChild(
+        socialItem({
+          name: "新平台",
+          handle: "",
+          url: "",
+          icon: "globe",
+          copy: false,
+          color: ["#E9A08C", "#D4785F"],
+        })
+      )
+    );
+    pane.appendChild(add);
+  }
+
+  /* ---------- 渲染：博客文章 ---------- */
+  // 单篇文章编辑卡片
+  function postItem(p) {
+    const item = el("div", "list-item");
+    const title = textInput(p.title);
+    title.placeholder = "标题";
+    const date = textInput(p.date);
+    date.placeholder = "日期 2026-09-28";
+    const tags = textInput((p.tags || []).join(", ")); // 标签以逗号拼成一行
+    tags.placeholder = "标签，逗号分隔";
+    const excerpt = textInput(p.excerpt);
+    excerpt.placeholder = "摘要";
+    const body = markdownField("正文（支持 Markdown，右侧实时预览）", p.body, 8);
+    const del = el("button", "item-del");
+    del.type = "button";
+    del.textContent = "×";
+    del.addEventListener("click", () => {
+      if (confirm("确定删除这篇文章吗？")) {
+        item.remove();
+        markDirty();
+      }
+    });
+
+    item.appendChild(field("标题", title));
+    item.appendChild(field("日期", date));
+    item.appendChild(field("标签", tags));
+    item.appendChild(field("摘要", excerpt));
+    item.appendChild(body);
+    item.appendChild(del);
+    return item;
+  }
+  function renderPosts() {
+    const pane = $("#pane-posts");
+    pane.innerHTML = "";
+    const list = el("div", "list");
+    DATA.posts.forEach((p) => list.appendChild(postItem(p)));
+    pane.appendChild(field("博客文章", list));
+    const add = el("button", "btn btn-ghost btn-sm");
+    add.type = "button";
+    add.textContent = "+ 添加文章";
+    add.addEventListener("click", () =>
+      list.appendChild(
+        postItem({ title: "新文章", date: "", tags: [], excerpt: "", body: [""] })
+      )
+    );
+    pane.appendChild(add);
+  }
+
+  /* ---------- 渲染：界面文案（UI 区块） ---------- */
+  // 扁平字段清单：[「组.键」, 显示标签]；顺序即表单从上到下的顺序
+  const UI_FIELDS = [
+    ["metaDescription", "SEO 描述（搜索引擎结果显示）"],
+    ["metaKeywords", "SEO 关键词（逗号分隔）"],
+    ["nav.home", "导航：首页"],
+    ["nav.about", "导航：关于"],
+    ["nav.blog", "导航：博客"],
+    ["nav.contact", "导航：联系"],
+    ["hero.primaryBtn", "首屏主按钮"],
+    ["hero.ghostBtn", "首屏次按钮"],
+    ["hero.scrollHint", "首屏滚动提示（无障碍文字）"],
+    ["authorStatus", "作者状态（首页展示的近况/更新频率，如：每周更新中）"],
+    ["about.kicker", "关于我：小标签"],
+    ["about.title", "关于我：标题"],
+    ["about.sub", "关于我：副标题"],
+    ["blog.kicker", "博客：小标签"],
+    ["blog.title", "博客：标题"],
+    ["blog.sub", "博客：副标题"],
+    ["blog.emptyHint", "博客：空状态提示"],
+    ["contact.kicker", "联系：小标签"],
+    ["contact.title", "联系：标题"],
+    ["contact.sub", "联系：副标题"],
+  ];
+  // 按 "a.b" 路径取深层级值（取不到返回空串）
+  function uiGet(obj, pathKey) {
+    return pathKey.split(".").reduce((o, k) => (o == null ? o : o[k]), obj) || "";
+  }
+  // 按 "a.b" 路径写入深层级值（中间层不存在就建空对象）
+  function uiSet(obj, pathKey, val) {
+    const keys = pathKey.split(".");
+    let cur = obj;
+    while (keys.length > 1) {
+      const k = keys.shift();
+      if (!cur[k] || typeof cur[k] !== "object") cur[k] = {};
+      cur = cur[k];
+    }
+    cur[keys[0]] = val;
+  }
+  function renderUI() {
+    const pane = $("#pane-ui");
+    pane.innerHTML = "";
+    const u = DATA.ui && typeof DATA.ui === "object" ? DATA.ui : {};
+    UI_FIELDS.forEach(([key, label]) => {
+      let control;
+      // 较长的文案用多行文本域，其余用单行输入框
+      if (/^(metaDescription|metaKeywords|.*\.sub|.*emptyHint)$/.test(key)) {
+        control = textareaInput(uiGet(u, key), 2);
+      } else {
+        control = textInput(uiGet(u, key));
+      }
+      control.dataset.uiKey = key; // 用 data-ui-key 标记，收集时据此回填
+      pane.appendChild(field(label, control));
+    });
+  }
+  // 收集界面文案：把表单按路径写回嵌套对象
+  function collectUI() {
+    const out = {};
+    $$("#pane-ui [data-ui-key]").forEach((inp) => {
+      uiSet(out, inp.dataset.uiKey, inp.value);
+    });
+    return out;
+  }
+
+  // 一次性渲染全部「内容」区块（工具箱不依赖 DATA，单独渲染）
+  function renderAll() {
+    renderSite();
+    renderUI();
+    renderAbout();
+    renderSocials();
+    renderPosts();
+    renderTools();
+    clearDirty();          // 刚渲染出来，视为「已保存」状态
+    refreshHint("");
+  }
+
+  /* ---------- 工具箱（纯前端小工具，无需服务器） ---------- */
+  // 文本转义，防止 Markdown 预览里的用户输入破坏页面结构/被注入
+  function escapeHtmlstr(s) {
+    return String(s).replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+    );
+  }
+  // 行内 Markdown：代码 / 加粗 / 斜体 / 链接（输入已转义，链接属性安全）
+  function mdInline(s) {
+    return s
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+      .replace(
+        /\[([^\]]+)\]\(([^)]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener">$1</a>'
+      );
+  }
+  // 极简 Markdown 解析：标题 / 引用 / 有序·无序列表 / 加粗斜体代码链接 / 段落
+  function miniMarkdown(src) {
+    const lines = String(src).replace(/\r\n/g, "\n").split("\n");
+    let html = "";
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (/^\s*$/.test(line)) { i++; continue; }
+      // 标题 # ## ###
+      let m = line.match(/^(#{1,3})\s+(.*)$/);
+      if (m) {
+        const lv = m[1].length;
+        html += "<h" + lv + ">" + mdInline(escapeHtmlstr(m[2])) + "</h" + lv + ">";
+        i++;
+        continue;
+      }
+      // 引用 >
+      if (/^>\s?/.test(line)) {
+        const buf = [];
+        while (i < lines.length && /^>\s?/.test(lines[i])) {
+          buf.push(lines[i].replace(/^>\s?/, ""));
+          i++;
+        }
+        html += "<blockquote>" + mdInline(escapeHtmlstr(buf.join(" "))) + "</blockquote>";
+        continue;
+      }
+      // 无序列表 - / *
+      if (/^[-*]\s+/.test(line)) {
+        const buf = [];
+        while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
+          buf.push("<li>" + mdInline(escapeHtmlstr(lines[i].replace(/^[-*]\s+/, ""))) + "</li>");
+          i++;
+        }
+        html += "<ul>" + buf.join("") + "</ul>";
+        continue;
+      }
+      // 有序列表 1.
+      if (/^\d+\.\s+/.test(line)) {
+        const buf = [];
+        while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
+          buf.push("<li>" + mdInline(escapeHtmlstr(lines[i].replace(/^\d+\.\s+/, ""))) + "</li>");
+          i++;
+        }
+        html += "<ol>" + buf.join("") + "</ol>";
+        continue;
+      }
+      // 普通段落：聚合连续的非空、非块级行
+      const buf = [];
+      while (
+        i < lines.length &&
+        !/^\s*$/.test(lines[i]) &&
+        !/(^#{1,3}\s)|(^>\s?)|(^[-*]\s+)|(^\d+\.\s+)/.test(lines[i])
+      ) {
+        buf.push(mdInline(escapeHtmlstr(lines[i])));
+        i++;
+      }
+      html += "<p>" + buf.join("<br>") + "</p>";
+    }
+    return html || '<p class="md-empty">（预览区，在左侧输入 Markdown）</p>';
+  }
+
+  // UTF-8 安全的 Base64 编解码（原生 btoa/atob 只能处理 Latin1，需先转 UTF-8）
+  function utf8ToBase64(str) {
+    return btoa(String.fromCharCode(...new TextEncoder().encode(str)));
+  }
+  function base64ToUtf8(b64) {
+    const bin = atob(b64);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  }
+
+  // 渲染工具箱面板：若干互相独立的小工具卡片
+  function renderTools() {
+    const pane = $("#pane-tools");
+    pane.innerHTML = "";
+    const grid = el("div", "tool-grid");
+    pane.appendChild(grid);
+
+    // 1) Markdown 实时预览（左侧输入，右侧实时渲染）
+    (function () {
+      const card = el("div", "tool-card");
+      const h = el("h3"); h.textContent = "Markdown 实时预览"; card.appendChild(h);
+      const ta = textareaInput("", 8);
+      ta.placeholder = "在这里输入 Markdown，右侧实时预览…";
+      card.appendChild(ta);
+      const out = el("div", "md-preview modal-body");
+      ta.addEventListener("input", () => { out.innerHTML = miniMarkdown(ta.value); });
+      out.innerHTML = miniMarkdown("");
+      card.appendChild(out);
+      grid.appendChild(card);
+    })();
+
+    // 2) JSON 格式化 / 压缩 / 校验
+    (function () {
+      const card = el("div", "tool-card");
+      const h = el("h3"); h.textContent = "JSON 格式化 / 校验"; card.appendChild(h);
+      const ta = textareaInput("", 8);
+      ta.placeholder = "粘贴 JSON…"; card.appendChild(ta);
+      const act = el("div", "tool-actions");
+      const bFmt = el("button", "btn btn-ghost btn-sm"); bFmt.type = "button"; bFmt.textContent = "格式化";
+      const bMin = el("button", "btn btn-ghost btn-sm"); bMin.type = "button"; bMin.textContent = "压缩";
+      const bChk = el("button", "btn btn-ghost btn-sm"); bChk.type = "button"; bChk.textContent = "校验";
+      act.append(bFmt, bMin, bChk); card.appendChild(act);
+      const res = el("div", "tool-result"); card.appendChild(res);
+      const show = (val, err) => {
+        res.className = err ? "tool-result error" : "tool-result";
+        res.textContent = err ? err : val;
+      };
+      bFmt.addEventListener("click", () => {
+        try { show(JSON.stringify(JSON.parse(ta.value), null, 2)); }
+        catch (e) { show(null, e.message); }
+      });
+      bMin.addEventListener("click", () => {
+        try { show(JSON.stringify(JSON.parse(ta.value))); }
+        catch (e) { show(null, e.message); }
+      });
+      bChk.addEventListener("click", () => {
+        try { JSON.parse(ta.value); show("✓ 合法 JSON"); }
+        catch (e) { show(null, "✗ " + e.message); }
+      });
+      grid.appendChild(card);
+    })();
+
+    // 3) Base64 编 / 解码（支持中文）
+    (function () {
+      const card = el("div", "tool-card");
+      const h = el("h3"); h.textContent = "Base64 编 / 解码"; card.appendChild(h);
+      const ta = textareaInput("", 6);
+      ta.placeholder = "输入文本…"; card.appendChild(ta);
+      const act = el("div", "tool-actions");
+      const bEnc = el("button", "btn btn-ghost btn-sm"); bEnc.type = "button"; bEnc.textContent = "编码 →";
+      const bDec = el("button", "btn btn-ghost btn-sm"); bDec.type = "button"; bDec.textContent = "← 解码";
+      act.append(bEnc, bDec); card.appendChild(act);
+      const res = el("div", "tool-result"); card.appendChild(res);
+      const set = (val, err) => {
+        res.className = err ? "tool-result error" : "tool-result";
+        res.textContent = val;
+      };
+      bEnc.addEventListener("click", () => {
+        try { set(utf8ToBase64(ta.value)); }
+        catch (e) { set(e.message, true); }
+      });
+      bDec.addEventListener("click", () => {
+        try { set(base64ToUtf8(ta.value.trim())); }
+        catch (e) { set("解码失败：不是合法的 Base64", true); }
+      });
+      grid.appendChild(card);
+    })();
+
+    // 4) 字数统计（实时）
+    (function () {
+      const card = el("div", "tool-card");
+      const h = el("h3"); h.textContent = "字数统计"; card.appendChild(h);
+      const ta = textareaInput("", 6);
+      ta.placeholder = "输入要统计的文本…"; card.appendChild(ta);
+      const res = el("div", "tool-result"); card.appendChild(res);
+      const count = () => {
+        const t = ta.value;
+        const total = t.length;
+        const noSpace = t.replace(/\s/g, "").length;
+        const lines = t ? t.split("\n").length : 0;
+        const cn = (t.match(/[\u4e00-\u9fff]/g) || []).length;
+        const en = (t.match(/[A-Za-z0-9_]+/g) || []).length;
+        res.className = "tool-result";
+        res.textContent =
+          "字符总数：" + total + "\n不含空白：" + noSpace +
+          "\n行数：" + lines + "\n中文字数：" + cn + "\n英文/数字词：" + en;
+      };
+      ta.addEventListener("input", count);
+      count();
+      grid.appendChild(card);
+    })();
+
+    // 5) 时间戳转换（秒/毫秒/日期互转，支持「填入当前」）
+    (function () {
+      const card = el("div", "tool-card");
+      const h = el("h3"); h.textContent = "时间戳转换"; card.appendChild(h);
+      const inp = textInput("");
+      inp.placeholder = "Unix 秒/毫秒 或 日期，如 2026-09-28 12:00:00"; card.appendChild(inp);
+      const act = el("div", "tool-actions");
+      const bConv = el("button", "btn btn-ghost btn-sm"); bConv.type = "button"; bConv.textContent = "转换";
+      const bNow = el("button", "btn btn-ghost btn-sm"); bNow.type = "button"; bNow.textContent = "填入当前";
+      act.append(bConv, bNow); card.appendChild(act);
+      const res = el("div", "tool-result"); card.appendChild(res);
+      const conv = () => {
+        const v = inp.value.trim();
+        if (!v) { res.className = "tool-result error"; res.textContent = "请输入时间戳或日期"; return; }
+        let d;
+        if (/^\d+$/.test(v)) {
+          const n = Number(v);
+          d = new Date(n <= 1e11 ? n * 1000 : n); // 10 位当秒，13 位当毫秒
+        } else {
+          d = new Date(v);
+        }
+        if (isNaN(d.getTime())) {
+          res.className = "tool-result error"; res.textContent = "无法识别为时间"; return;
+        }
+        res.className = "tool-result";
+        res.textContent =
+          "Unix 秒：" + Math.floor(d.getTime() / 1000) +
+          "\nUnix 毫秒：" + d.getTime() +
+          "\n本地时间：" + d.toLocaleString() +
+          "\nUTC：" + d.toUTCString();
+      };
+      bConv.addEventListener("click", conv);
+      bNow.addEventListener("click", () => { inp.value = String(Math.floor(Date.now() / 1000)); conv(); });
+      grid.appendChild(card);
+    })();
+  }
+
+  /* ---------- 收集：把表单读回数据对象 ---------- */
+  // 站点信息：扫描所有带 data-key 的输入框，按键名取回值
+  function collectSite() {
+    const obj = {};
+    $$("#pane-site .field [data-key]").forEach((inp) => {
+      obj[inp.dataset.key] = inp.value;
+    });
+    return obj;
+  }
+  // 关于我：引入语 + 每个主题卡的标题/正文
+  function collectAbout() {
+    const intro = ($("#pane-about [data-about='intro']") || {}).value || "";
+    const themes = $$("#aboutThemeList .list-item").map((it) => {
+      const inputs = it.querySelectorAll("input, textarea");
+      return { title: inputs[0].value, body: linesToArr(inputs[1].value) };
+    });
+    return { intro, themes };
+  }
+  // 社交账号：每个卡片里的文本/复选/颜色输入按固定顺序取出
+  function collectSocials() {
+    return $$("#pane-socials .list-item").map((it) => {
+      const inp = it.querySelectorAll("input[type='text'], textarea");
+      const checks = it.querySelectorAll("input[type='checkbox']");
+      const colors = it.querySelectorAll("input[type='color']");
+      return {
+        name: inp[0].value,
+        handle: inp[1].value,
+        url: inp[2].value,
+        icon: inp[3].value,
+        copy: checks[0].checked,
+        color: [colors[0].value, colors[1].value],
+      };
+    });
+  }
+  // 博客文章：每个卡片的 标题/日期/标签/摘要/正文 按输入顺序取出
+  function collectPosts() {
+    return $$("#pane-posts .list-item").map((it) => {
+      const inp = it.querySelectorAll("input, textarea");
+      return {
+        title: inp[0].value,
+        date: inp[1].value,
+        tags: linesToArr(inp[2].value),
+        excerpt: inp[3].value,
+        body: linesToArr(inp[4].value),
+      };
+    });
+  }
+  // 汇总成完整的 { site, about, socials, posts, ui }
+  function collectAll() {
+    return {
+      site: collectSite(),
+      ui: collectUI(),
+      about: collectAbout(),
+      socials: collectSocials(),
+      posts: collectPosts(),
+    };
+  }
+
+  /* ---------- 保存 / 导出 ---------- */
+  // 保存前校验：返回错误信息字符串，没有问题则返回 null
+  function validate(data) {
+    const errs = [];
+    if (!String((data.site && data.site.name) || "").trim()) {
+      errs.push("「站点名字」不能为空");
+    }
+    const email = String((data.site && data.site.email) || "").trim();
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      errs.push("邮箱格式不对：" + email);
+    }
+    if (!data.about || !Array.isArray(data.about.themes) || !data.about.themes.length) {
+      errs.push("「关于我」至少要保留一个主题故事");
+    }
+    (data.posts || []).forEach((p, i) => {
+      if (!String(p.title || "").trim()) errs.push(`第 ${i + 1} 篇文章缺少标题`);
+      if (p.date && !/^\d{4}-\d{2}-\d{2}$/.test(String(p.date).trim())) {
+        errs.push(`《${p.title || "第" + (i + 1) + "篇"}》日期格式应为 2026-10-17`);
+      }
+    });
+    (data.socials || []).forEach((s, i) => {
+      if (!String(s.name || "").trim()) errs.push(`第 ${i + 1} 个社交账号缺少名称`);
+    });
+    return errs.length ? errs.join("；") : null;
+  }
+
+  // 保存：校验 -> 收集表单 -> POST /api/content 写回服务器
+  async function save() {
+    const data = collectAll();
+    const err = validate(data);
+    if (err) {
+      refreshHint("保存失败：" + err);
+      toast("保存失败：" + err);
+      return;
+    }
+    DATA = data; // 先更新内存中的数据（防止重复提交时读旧值）
+    const btn = $("#saveBtn");
+    btn.disabled = true;
+    btn.textContent = "保存中…";
+    try {
+      const res = await fetch("/api/content", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (res.ok) {
+        clearDirty();
+        refreshHint("已保存到服务器，刷新前台即可生效。");
+        toast("✓ 已保存");
+      } else if (res.status === 401) {
+        // 会话过期：提示并退回登录
+        refreshHint("登录已失效，请重新登录。");
+        toast("登录已失效，请重新登录");
+        logout();
+      } else {
+        const j = await res.json().catch(() => ({}));
+        refreshHint(j.error || "保存失败");
+        toast(j.error || "保存失败");
+      }
+    } catch (e) {
+      refreshHint("网络错误，请确认服务器已启动（node server.js）");
+      toast("网络错误，请确认服务器已启动");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "保存";
+    }
+  }
+
+  // 把 JS 值序列化成可读源码文本（与 server.js 的 jsVal 同理）
+  function jsVal(v, indent) {
+    const pad = "  ".repeat(indent);
+    const pad1 = "  ".repeat(indent + 1);
+    if (typeof v === "string") return JSON.stringify(v);
+    if (typeof v === "number") return String(v);
+    if (typeof v === "boolean") return String(v);
+    if (Array.isArray(v)) {
+      if (!v.length) return "[]";
+      return (
+        "[\n" +
+        v.map((x) => pad1 + jsVal(x, indent + 1)).join(",\n") +
+        "\n" +
+        pad +
+        "]"
+      );
+    }
+    if (v && typeof v === "object") {
+      const keys = Object.keys(v);
+      if (!keys.length) return "{}";
+      return (
+        "{\n" +
+        keys
+          .map((k) => pad1 + JSON.stringify(k) + ": " + jsVal(v[k], indent + 1))
+          .join(",\n") +
+        "\n" +
+        pad +
+        "}"
+      );
+    }
+    return "null";
+  }
+
+  // 导出 data.js：把当前内容生成为完整 data.js 文本并触发下载（用于备份/手动替换）
+  function exportFile() {
+    const data = collectAll();
+    const out =
+      "/* =========================================================\n" +
+      "   Anhuann · 内容配置文件（由后台导出）\n" +
+      "   改完保存后，覆盖 assets/js/data.js，刷新 index.html 生效。\n" +
+      "   ========================================================= */\n\n" +
+      "const SITE = " +
+      jsVal(data.site, 0) +
+      ";\n\n" +
+      "const ABOUT = " +
+      jsVal(data.about, 0) +
+      ";\n\n" +
+      "const POSTS = " +
+      jsVal(data.posts, 0) +
+      ";\n\n" +
+      "const SOCIALS = " +
+      jsVal(data.socials, 0) +
+      ";\n\n" +
+      "const UI = " +
+      jsVal(data.ui || {}, 0) +
+      ";\n";
+    const blob = new Blob([out], { type: "text/javascript" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); // 用 Blob 生成临时下载地址
+    a.download = "data.js";
+    a.click();
+    URL.revokeObjectURL(a.href); // 释放临时地址
+    refreshHint("已导出 data.js，覆盖到 assets/js/data.js 即可。");
+    toast("已导出 data.js");
+  }
+
+  /* ---------- 备份 / 恢复 ---------- */
+  // 打开备份弹窗：拉取服务器上的自动备份列表并渲染
+  async function openBackups() {
+    const modal = $("#backupModal");
+    const list = $("#backupList");
+    list.innerHTML = '<p class="backup-empty">正在加载…</p>';
+    modal.hidden = false;
+    document.body.classList.add("is-locked"); // 锁定背景滚动
+    try {
+      const res = await fetch("/api/backups", { credentials: "same-origin" });
+      if (res.status === 401) {
+        closeBackups();
+        toast("登录已失效，请重新登录");
+        logout();
+        return;
+      }
+      const j = await res.json();
+      const files = (j && j.backups) || [];
+      if (!files.length) {
+        list.innerHTML =
+          '<p class="backup-empty">还没有备份。之后每次点「保存」都会自动生成一份。</p>';
+        return;
+      }
+      list.innerHTML = "";
+      files.forEach((f) => {
+        const row = el("div", "backup-row");
+        const info = el("div");
+        const nm = el("div", "backup-name");
+        nm.textContent = f.time; // 形如 20261019-200225-080
+        const sz = el("div", "backup-size");
+        sz.textContent = (f.size / 1024).toFixed(1) + " KB";
+        info.appendChild(nm);
+        info.appendChild(sz);
+        const btn = el("button", "btn btn-ghost btn-sm");
+        btn.type = "button";
+        btn.textContent = "恢复";
+        btn.addEventListener("click", () => restoreBackup(f.name));
+        row.appendChild(info);
+        row.appendChild(btn);
+        list.appendChild(row);
+      });
+    } catch (e) {
+      list.innerHTML =
+        '<p class="backup-empty">加载失败，请确认服务器已启动（node server.js）。</p>';
+    }
+  }
+  function closeBackups() {
+    $("#backupModal").hidden = true;
+    document.body.classList.remove("is-locked");
+  }
+  // 用指定备份覆盖当前内容，成功后重新拉取并渲染表单
+  async function restoreBackup(name) {
+    if (!confirm("确定恢复这份备份吗？当前内容会被它覆盖（恢复前也会自动备份一次当前内容）。")) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/restore", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (res.status === 401) {
+        closeBackups();
+        toast("登录已失效，请重新登录");
+        logout();
+        return;
+      }
+      const j = await res.json().catch(() => ({}));
+      if (res.ok) {
+        await loadContent(); // 重新拉取恢复后的内容
+        renderAll();
+        refreshHint("已恢复备份，并重新载入内容。");
+        toast("✓ 已恢复备份");
+        closeBackups();
+      } else {
+        toast(j.error || "恢复失败");
+      }
+    } catch (e) {
+      toast("网络错误，请确认服务器已启动");
+    }
+  }
+
+  // 绑定底部「保存」「恢复备份」「导出」按钮
+  $("#saveBtn").addEventListener("click", save);
+  $("#backupBtn").addEventListener("click", openBackups);
+  $("#backupCloseBtn").addEventListener("click", closeBackups);
+  $("#backupModal").addEventListener("click", (e) => {
+    if (e.target.hasAttribute("data-close")) closeBackups();
+  });
+  $("#exportBtn").addEventListener("click", exportFile);
+
+  /* ---------- 快捷键与「未保存」提醒 ---------- */
+  // Ctrl+S / Cmd+S 直接保存；Esc 关闭备份弹窗
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+      e.preventDefault();
+      if (!adminPanel.hidden) save();
+    }
+    if (e.key === "Escape") {
+      const m = $("#backupModal");
+      if (m && !m.hidden) closeBackups();
+    }
+  });
+  // 有未保存更改时，关闭/刷新页面前弹浏览器确认
+  window.addEventListener("beforeunload", (e) => {
+    if (dirty) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  });
+  // 任何输入/改动都标记为「未保存」（事件委托，动态新增的条目也覆盖）
+  adminPanel.addEventListener("input", markDirty);
+  adminPanel.addEventListener("change", markDirty);
+
+  /* ---------- 选项卡切换 ---------- */
+  // 点某个 tab：清除其它激活态，激活当前 tab 对应的面板
+  $$(".tab").forEach((t) => {
+    t.addEventListener("click", () => {
+      $$(".tab").forEach((x) => x.classList.remove("active"));
+      $$(".tab-pane").forEach((x) => x.classList.remove("active"));
+      t.classList.add("active");
+      $(".tab-pane[data-pane='" + t.dataset.tab + "']").classList.add("active");
+    });
+  });
+
+  /* ---------- 启动：若已有会话则自动进入后台 ---------- */
+  (async function boot() {
+    try {
+      // 问服务器「我登录了没」；已登录就直接拉内容进后台
+      const res = await fetch("/api/session", { credentials: "same-origin" });
+      if (res.ok) {
+        await loadContent();
+        showAdmin();
+      }
+    } catch (e) {
+      /* 未登录或服务器未启动，停留在登录页 */
+    }
+  })();
+})();
