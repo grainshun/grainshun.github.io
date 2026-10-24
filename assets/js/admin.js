@@ -37,6 +37,9 @@
   const GH_REPO = "grainshun.github.io";
   const GH_BRANCH = "main";
   const GH_DATA_PATH = "assets/js/data.js";
+  // 中转代理地址（解决国内直连 api.github.com 不稳定/被拦截的问题）。
+  // 留空 = 直连 api.github.com；部署 Cloudflare Worker 等代理后，把地址填到这里即可。
+  const GH_PROXY = "https://grainshungithubio.vercel.app/api/proxy.js";
   // token 仅存内存与浏览器会话，不写进代码；用于保存时把 data.js 提交回仓库
   let ghToken = "";
   function rememberToken(t) {
@@ -55,7 +58,11 @@
       opts.headers || {}
     );
     if (ghToken) headers["Authorization"] = "Bearer " + ghToken;
-    const res = await fetch("https://api.github.com" + path, {
+    const base = GH_PROXY ? GH_PROXY.replace(/\/$/, "") : "https://api.github.com";
+    const apiUrl = GH_PROXY
+      ? base + "/?target=" + encodeURIComponent(path)
+      : base + path;
+    const res = await fetch(apiUrl, {
       method: opts.method || "GET",
       headers,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
