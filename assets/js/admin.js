@@ -93,7 +93,9 @@
     const fn = new Function(
       text + "\nreturn { SITE: SITE, ABOUT: ABOUT, POSTS: POSTS, SOCIALS: SOCIALS, UI: (typeof UI !== 'undefined' ? UI : {}) };"
     );
-    return fn();
+    const d = fn();
+    // admin.js 内部统一用小写键（site/about/posts/socials/ui），与渲染/收集逻辑保持一致
+    return { site: d.SITE, about: d.ABOUT, posts: d.POSTS, socials: d.SOCIALS, ui: d.UI || {} };
   }
 
   /* ---------- 当前编辑中的数据（来自服务器） ---------- */
