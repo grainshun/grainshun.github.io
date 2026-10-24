@@ -59,14 +59,30 @@
     );
     if (ghToken) headers["Authorization"] = "Bearer " + ghToken;
     const base = GH_PROXY ? GH_PROXY.replace(/\/$/, "") : "https://api.github.com";
-    const res = await fetch(base + path, {
+    const init = {
       method: opts.method || "GET",
       headers,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
-    });
-    let json = null, text = "";
-    try { text = await res.text(); json = text ? JSON.parse(text) : null; } catch (e) {}
-    return { status: res.status, json, text };
+    };
+    // 国内直连 GitHub 常间歇性超时：每次请求加超时 + 自动重试，能连上就用
+    const maxTries = 3;
+    let lastErr = null;
+    for (let i = 0; i < maxTries; i++) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(function () { ctrl.abort(); }, 10000);
+      try {
+        const res = await fetch(base + path, Object.assign({}, init, { signal: ctrl.signal }));
+        let json = null, text = "";
+        try { text = await res.text(); json = text ? JSON.parse(text) : null; } catch (e) {}
+        return { status: res.status, json, text };
+      } catch (e) {
+        lastErr = e;
+        if (i < maxTries - 1) await new Promise(function (r) { setTimeout(r, 900 * (i + 1)); });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return { status: 0, json: null, text: "", error: lastErr };
   }
   // 把内容对象生成为完整 data.js 文本（与导出同格式）
   function buildDataJs(data) {
@@ -136,6 +152,9 @@
       return;
     }
     const remember = $("#rememberMe") && $("#rememberMe").checked;
+    const btn = $("#loginBtn");
+    btn.disabled = true; btn.textContent = "连接中…";
+    $("#loginError").textContent = "";
     try {
       await loginWithToken(t, remember);
     } catch (e) {
@@ -145,8 +164,10 @@
       } else if (m.indexOf("PROBE_FAIL") === 0) {
         $("#loginError").textContent = "无法访问仓库（" + m.split(":")[1] + "），请稍后重试";
       } else {
-        $("#loginError").textContent = "网络错误，无法连接 GitHub";
+        $("#loginError").textContent = "连接 GitHub 失败（已自动重试）。若网络对 GitHub 不稳，请稍后再试或换个网络环境。";
       }
+    } finally {
+      btn.disabled = false; btn.textContent = "进入后台";
     }
   }
 
