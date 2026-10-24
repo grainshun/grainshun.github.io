@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<!-- 后台管理页面：登录后可视化编辑内容。内容经服务器 API 读写。 -->
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>后台 · Anhuann</title>
+    <!-- 后台复用前台主样式，再叠加后台专用样式 -->
+    <link rel="stylesheet" href="assets/css/style.css" />
+    <link rel="stylesheet" href="assets/css/admin.css" />
+  </head>
+  <body>
+    <!-- 登录门禁：未登录时显示，登录成功后由 JS 隐藏（hidden） -->
+    <div class="login-screen" id="loginScreen">
+      <div class="login-card">
+        <div class="login-logo">A</div>
+        <h1>后台登录</h1>
+        <p class="login-sub">Anhuann 内容管理</p>
+        <!-- 账号输入 -->
+        <label class="field">
+          <span class="field-label">账号</span>
+          <input class="input" id="loginUser" type="text" autocomplete="username" />
+        </label>
+        <!-- 密码输入 -->
+        <label class="field">
+          <span class="field-label">密码</span>
+          <input class="input" id="loginPass" type="password" autocomplete="current-password" />
+        </label>
+        <!-- 记住我：勾选后服务器下发更长有效期的会话 Cookie，实现自动登录 -->
+        <label class="login-remember">
+          <input type="checkbox" id="rememberMe" checked />
+          <span>记住我（下次自动登录）</span>
+        </label>
+        <button class="btn btn-primary" id="loginBtn">登录</button>
+        <!-- 登录失败时的错误提示（由 JS 写入） -->
+        <p class="login-error" id="loginError"></p>
+        <p class="login-note">
+          账号密码由服务器校验，登录态保存在 HttpOnly Cookie 中。
+          请通过 <code>node server.js</code> 启动后访问本后台，不要直接把后台暴露到公网。
+        </p>
+      </div>
+    </div>
+
+    <!-- 后台主体：默认 hidden，登录成功后才显示 -->
+    <div class="admin" id="adminPanel" hidden>
+      <header class="admin-header">
+        <div class="admin-brand">后台 · Anhuann</div>
+        <button class="btn btn-ghost btn-sm" id="logoutBtn">退出登录</button>
+      </header>
+
+      <div class="admin-body">
+        <!-- 左侧标签导航：data-tab 对应右侧面板的 data-pane -->
+        <nav class="admin-tabs" id="adminTabs">
+          <button class="tab active" data-tab="site" type="button">站点信息</button>
+          <button class="tab" data-tab="ui" type="button">界面文案</button>
+          <button class="tab" data-tab="about" type="button">关于我</button>
+          <button class="tab" data-tab="socials" type="button">社交账号</button>
+          <button class="tab" data-tab="posts" type="button">博客文章</button>
+          <button class="tab" data-tab="tools" type="button">工具箱</button>
+        </nav>
+
+        <!-- 右侧内容面板：四个区块的表单由 JS 动态注入，初始为空 -->
+        <main class="admin-content">
+          <section class="tab-pane active" data-pane="site" id="pane-site"></section>
+          <section class="tab-pane" data-pane="ui" id="pane-ui"></section>
+          <section class="tab-pane" data-pane="about" id="pane-about"></section>
+          <section class="tab-pane" data-pane="socials" id="pane-socials"></section>
+          <section class="tab-pane" data-pane="posts" id="pane-posts"></section>
+          <section class="tab-pane" data-pane="tools" id="pane-tools"></section>
+        </main>
+      </div>
+
+      <footer class="admin-footer">
+        <!-- 保存/导出后的提示信息（由 JS 写入） -->
+        <span id="saveHint"></span>
+        <div class="admin-actions">
+          <!-- 保存：把表单内容 POST 回服务器，写回 data.js（保存前会自动备份） -->
+          <button class="btn btn-primary" id="saveBtn">保存</button>
+          <!-- 恢复备份：打开弹窗，选择一份自动备份来覆盖当前内容 -->
+          <button class="btn btn-ghost" id="backupBtn">恢复备份</button>
+          <!-- 导出：下载当前内容为 data.js 文件做备份 -->
+          <button class="btn btn-ghost" id="exportBtn">导出 data.js</button>
+        </div>
+      </footer>
+    </div>
+
+    <!-- 恢复备份弹窗：默认 hidden；打开时由 JS 拉取备份列表并渲染 -->
+    <div class="modal" id="backupModal" role="dialog" aria-modal="true" hidden>
+      <div class="modal-mask" data-close></div>
+      <div class="modal-panel backup-panel">
+        <button class="modal-close" id="backupCloseBtn" type="button" aria-label="关闭"></button>
+        <h2 class="backup-title">恢复备份</h2>
+        <p class="backup-tip">
+          每次点「保存」前，服务器都会自动备份 <code>data.js</code>（保留最近 5 份）。
+          选择一份恢复后，当前内容会被该备份覆盖（恢复前也会再自动备份一次当前内容）。
+        </p>
+        <div class="backup-list" id="backupList"></div>
+      </div>
+    </div>
+
+    <!-- 后台脚本：data.js 提供初始内容回退，admin.js 负责登录/渲染/保存 -->
+    <script src="assets/js/data.js"></script>
+    <script src="assets/js/admin.js"></script>
+  </body>
+</html>
