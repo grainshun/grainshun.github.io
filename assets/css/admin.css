@@ -309,6 +309,64 @@ textarea.input {
 .backup-name { font-size: 0.95rem; font-weight: 600; }
 .backup-size { font-size: 0.8rem; color: #94a1ad; margin-top: 2px; }
 
+/* ---------- 文章预览弹窗（Word 风格整页文档） ---------- */
+.preview-panel {
+  max-width: 860px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid #e4ecf4;
+  background: #fff;
+}
+.preview-title { font-weight: 700; color: #37424f; }
+/* 文档正文：像一张纸，居中、留白、舒适排版 */
+.doc-preview {
+  background: #fff;
+  max-width: 720px;
+  width: 100%;
+  margin: 24px auto 40px;
+  padding: 48px 56px;
+  border: 1px solid #e4ecf4;
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(64, 92, 130, 0.08);
+  font-size: 1.02rem;
+  line-height: 1.85;
+  color: #2c3540;
+  overflow: auto;
+}
+.doc-preview h1, .doc-preview h2, .doc-preview h3, .doc-preview h4 {
+  margin: 1.2em 0 0.5em; line-height: 1.35; color: #2c3540;
+}
+.doc-preview h1 { font-size: 1.7rem; }
+.doc-preview h2 { font-size: 1.35rem; }
+.doc-preview h3 { font-size: 1.15rem; }
+.doc-preview p { margin: 0.8em 0; }
+.doc-preview ul, .doc-preview ol { margin: 0.8em 0; padding-left: 1.6em; }
+.doc-preview li { margin: 0.3em 0; }
+.doc-preview blockquote {
+  margin: 1em 0; padding: 0.5em 1em;
+  border-left: 4px solid #e08d79; background: #fdf6f4; color: #5e6b78;
+  border-radius: 0 10px 10px 0;
+}
+.doc-preview code { background: #eef4fb; border-radius: 6px; padding: 2px 7px; font-size: 0.9em; }
+.doc-preview pre {
+  background: #f6f9fc; border: 1px solid #e4ecf4; border-radius: 12px;
+  padding: 14px 16px; overflow: auto;
+}
+.doc-preview pre code { background: none; padding: 0; }
+.doc-preview a { color: #d4785f; }
+.doc-preview hr { border: none; border-top: 1px solid #e4ecf4; margin: 1.6em 0; }
+.doc-preview .katex-display { overflow: auto; padding: 0.3em 0; }
+.doc-preview:empty::before { content: "（没有内容可预览）"; color: #94a1ad; }
+
 /* 底部提示：有未保存更改时变橙色，提醒用户 */
 #saveHint.is-dirty { color: #d4785f; font-weight: 600; }
 /* Markdown 预览：复用前台 .modal-body 的排版样式，这里只控最大高度与滚动 */
@@ -375,4 +433,5 @@ textarea.input {
   .backup-list { max-height: none; }
   .md-preview { max-height: none; }
   .md-split { grid-template-columns: 1fr; }
+  .doc-preview { margin: 0 auto; padding: 24px 20px; border: none; border-radius: 0; box-shadow: none; }
 }
