@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<!-- 语言设为简体中文；data-theme="light" 是初始主题，JS 会按用户选择/系统偏好切换 -->
+<html lang="zh-CN" data-theme="light">
+<head>
+  <!-- 字符编码与移动端适配（禁止缩放由 user-scalable 控制，这里用标准 1.0） -->
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- 浏览器标签页标题（也会被 main.js 按 SITE.name 覆盖一次） -->
+  <title>Anhuann · 个人主页</title>
+  <!-- SEO 描述：内容由 JS 按 UI.metaDescription 填充 -->
+  <meta name="description" id="metaDesc" content="Anhuann 的个人网站 —— 记录一些作品、一些想法，以及一点点生活。" />
+  <!-- 移动端地址栏颜色（浅色主题用淡蓝，深色调由 JS 切换） -->
+  <meta name="theme-color" content="#e9f1fb" />
+  <!-- 内联 SVG 图标做网站 favicon：渐变圆角方块 + 字母 A（无需额外文件） -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23E9A08C'/%3E%3Cstop offset='1' stop-color='%23E8B98A'/%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Ctext x='32' y='44' font-size='36' font-family='Arial,Helvetica,sans-serif' font-weight='bold' fill='white' text-anchor='middle'%3EA%3C/text%3E%3C/svg%3E" />
+  <!-- 主样式（配色、布局、组件） -->
+  <link rel="stylesheet" href="assets/css/style.css" />
+  <!-- 本地 KaTeX 样式（数学公式用，离线可用） -->
+  <link rel="stylesheet" href="assets/vendor/katex/katex.min.css" />
+  </head>
+<body>
+  <!-- 顶部滚动进度条：span#progressBar 的宽度由 JS 按滚动比例设置 -->
+  <div class="scroll-progress"><span id="progressBar"></span></div>
+
+  <!-- 顶部导航 -->
+  <header class="site-header" id="siteHeader">
+    <div class="container header-inner">
+      <!-- 品牌区：头像占位文字 + （可选的）头像图片，文字由 JS 填充 -->
+      <a class="brand" href="#home">
+        <span class="brand-mark" id="brandMark">
+          <span class="avatar-fallback" id="brandMarkText">A</span>
+          <img class="avatar-img" id="brandMarkImg" alt="AnHuann" hidden />
+        </span>
+        <span class="brand-text" id="brandText">Anhuann</span>
+      </a>
+
+      <!-- 桌面导航链接：href 对应各 section 的 id；文字由 JS 按 UI.nav 填充，当前项由 JS 加 .active -->
+      <nav class="nav-links" id="navLinks">
+        <a href="#home" class="nav-link active" data-nav="home">首页</a>
+        <a href="#about" class="nav-link" data-nav="about">关于</a>
+        <a href="#blog" class="nav-link" data-nav="blog">博客</a>
+        <a href="#contact" class="nav-link" data-nav="contact">联系</a>
+      </nav>
+
+      <div class="header-actions">
+        <!-- 深浅色切换按钮：JS 在点击时翻转 data-theme -->
+        <button class="icon-btn theme-toggle" id="themeToggle" type="button" aria-label="切换深浅色主题">
+          <span class="theme-icon-light"></span>
+          <span class="theme-icon-dark"></span>
+        </button>
+        <!-- 汉堡按钮：窄屏展开移动端菜单；aria-expanded 由 JS 维护无障碍状态 -->
+        <button class="icon-btn menu-btn" id="menuBtn" type="button" aria-label="打开菜单" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- 移动端下拉菜单（窄屏显示，点链接后自动收起）；文字同样按 UI.nav 填充 -->
+    <div class="mobile-menu" id="mobileMenu">
+      <a href="#home" class="mobile-link" data-nav="home">首页</a>
+      <a href="#about" class="mobile-link" data-nav="about">关于</a>
+      <a href="#blog" class="mobile-link" data-nav="blog">博客</a>
+      <a href="#contact" class="mobile-link" data-nav="contact">联系</a>
+    </div>
+  </header>
+
+  <main>
+    <!-- 首页 Hero：首屏。带两个装饰光斑 blob，内容由 SITE 填充 -->
+    <section class="hero" id="home">
+      <div class="hero-blob blob-1"></div>
+      <div class="hero-blob blob-2"></div>
+      <div class="container hero-inner">
+        <!-- 首屏头像：默认显示首字母占位，配了 SITE.avatar 则换成图片 -->
+        <div class="hero-avatar" id="heroAvatar">
+          <span class="avatar-fallback" id="heroAvatarText">A</span>
+          <img class="avatar-img" id="heroAvatarImg" alt="AnHuann" hidden />
+        </div>
+        <p class="hero-greeting" id="heroGreeting">你好，我是</p>
+        <h1 class="hero-name" id="heroName">Anhuann</h1>
+        <p class="hero-tagline" id="heroTagline"></p>
+        <p class="hero-desc" id="heroDesc"></p>
+        <div class="hero-actions">
+          <!-- 主按钮指向博客；次按钮指向联系；文字按 UI.hero 填充 -->
+          <a class="btn btn-primary" id="heroPrimaryBtn" href="#blog">读读我的文字</a>
+          <a class="btn btn-ghost" id="heroGhostBtn" href="#contact">和我聊聊</a>
+        </div>
+        <!-- 首屏社交图标药丸（最多 5 个），由 JS 注入 -->
+        <div class="hero-socials" id="heroSocials"></div>
+        <!-- 作者状态：更新频率/近况，文字按 UI.authorStatus 填充，后台「界面文案」可改 -->
+        <p class="author-status" id="authorStatus"></p>
+      </div>
+      <!-- 向下滚动提示（指向关于区）；无障碍文字按 UI.hero.scrollHint 填充 -->
+      <a class="scroll-hint" id="scrollHint" href="#about" aria-label="向下滚动">
+        <span class="mouse"><span></span></span>
+      </a>
+    </section>
+
+    <!-- 关于 -->
+    <section class="section" id="about">
+      <div class="container">
+        <!-- 标题区：小标签/标题/副标题均由 JS 按 UI.about 填充 -->
+        <div class="section-head reveal">
+          <span class="section-kicker" id="aboutKicker">About</span>
+          <h2 class="section-title" id="aboutTitle">关于我</h2>
+          <p class="section-sub" id="aboutSub"></p>
+        </div>
+
+        <!-- 引入语（一段文字） -->
+        <div class="about-intro reveal" id="aboutIntro"></div>
+        <!-- 主题故事卡列表：每个 ABOUT.themes 项渲染成一张卡，由 JS 注入 -->
+        <div class="story-list" id="storyList"></div>
+      </div>
+    </section>
+
+    <!-- 博客（浅色底，与「关于」形成交替） -->
+    <section class="section section-soft" id="blog">
+      <div class="container">
+        <!-- 标题区：小标签/标题/副标题均由 JS 按 UI.blog 填充 -->
+        <div class="section-head reveal">
+          <span class="section-kicker" id="blogKicker">Blog</span>
+          <h2 class="section-title" id="blogTitle">写点什么</h2>
+          <p class="section-sub" id="blogSub">零散的想法、踩过的坑，以及一些不成熟的小结。</p>
+        </div>
+        <!-- 文章列表：每篇一个按钮，点击打开弹窗；为空时显示空提示 -->
+        <div class="post-list" id="postList"></div>
+        <p class="empty-hint" id="postsEmpty" hidden>还没有文章，去 <code>assets/js/data.js</code> 里添加吧。</p>
+      </div>
+    </section>
+
+    <!-- 联系 -->
+    <section class="section" id="contact">
+      <div class="container">
+        <!-- 标题区：小标签/标题/副标题均由 JS 按 UI.contact 填充 -->
+        <div class="section-head reveal">
+          <span class="section-kicker" id="contactKicker">Contact</span>
+          <h2 class="section-title" id="contactTitle">联系我</h2>
+          <p class="section-sub" id="contactSub">有想法、有合作，或者只是想打个招呼，都欢迎。</p>
+        </div>
+
+        <div class="contact-wrap reveal">
+          <!-- 邮件卡片：href 由 JS 设为 mailto: -->
+          <a class="mail-card" id="mailCard" href="#">
+            <span class="mail-icon" id="mailIcon"></span>
+            <span class="mail-text">
+              <span class="mail-label">给我发邮件</span>
+              <span class="mail-value" id="mailValue">hello@grainshun.com</span>
+            </span>
+            <span class="mail-arrow" id="mailArrow"></span>
+          </a>
+
+          <!-- 社交账号卡片网格（徽章 + 名称 + 账号），由 JS 注入 -->
+          <div class="social-grid" id="socialGrid"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 页脚：版权文案 + 社交图标药丸（全部），均由 JS 注入 -->
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <p class="footer-copy" id="footerCopy"></p>
+      <div class="footer-links" id="footerLinks"></div>
+    </div>
+  </footer>
+
+  <!-- 文章弹窗：默认 hidden；打开时由 JS 填充并解锁 body 滚动 -->
+  <div class="modal" id="postModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" hidden>
+    <div class="modal-mask" data-close></div>
+    <article class="modal-panel">
+      <button class="modal-close" id="modalClose" type="button" aria-label="关闭"></button>
+      <div class="modal-meta">
+        <time id="modalDate"></time>
+        <span class="modal-tags" id="modalTags"></span>
+      </div>
+      <h2 class="modal-title" id="modalTitle"></h2>
+      <div class="modal-body" id="modalBody"></div>
+    </article>
+  </div>
+
+  <!-- 回到顶部按钮（滚动超过一屏后显示） -->
+  <button class="to-top" id="toTop" type="button" aria-label="回到顶部"></button>
+
+  <!-- 脚本顺序很重要：
+       1) data.js    —— 提供 SITE/ABOUT/POSTS/SOCIALS 全局内容（离线回退用）
+       2) katex      —— 数学公式渲染库（本地）
+       3) auto-render—— KaTeX 的自动渲染扩展
+       4) main.js    —— 业务脚本，依赖上面的库与数据，必须放最后 -->
+  <script src="assets/js/data.js"></script>
+  <script src="assets/vendor/katex/katex.min.js"></script>
+  <script src="assets/vendor/katex/contrib/auto-render.min.js"></script>
+  <script src="assets/js/main.js"></script>
+  </body>
+</html>
