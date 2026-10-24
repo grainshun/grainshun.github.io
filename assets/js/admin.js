@@ -236,6 +236,40 @@
     ta.setSelectionRange(ns, ne);
     ta.dispatchEvent(new Event("input"));
   }
+  /* ---------- 数学公式渲染（KaTeX，后台预览用） ---------- */
+  // 把 scope 容器内的 $...$ / $$...$$ 等交给 KaTeX 渲染；库由 admin.html 本地引入。
+  function renderMath(scope) {
+    if (scope && window.renderMathInElement) {
+      try {
+        window.renderMathInElement(scope, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },   // 块级公式
+            { left: "$", right: "$", display: false },     // 行内公式
+            { left: "\\(", right: "\\)", display: false }, // 备选行内写法
+            { left: "\\[", right: "\\]", display: true }   // 备选块级写法
+          ],
+          throwOnError: false // 公式写错时不抛错，只标红该处
+        });
+      } catch (e) {}
+    }
+  }
+  // Word 风格整页预览：把当前 Markdown 渲染成干净文档，全屏查看
+  function openDocPreview(md) {
+    const body = $("#previewBody");
+    if (!body) return;
+    body.innerHTML = miniMarkdown(md == null ? "" : md);
+    renderMath(body);
+    const modal = $("#previewModal");
+    if (modal) {
+      modal.hidden = false;
+      document.body.classList.add("is-locked");
+    }
+  }
+  function closeDocPreview() {
+    const modal = $("#previewModal");
+    if (modal) modal.hidden = true;
+    document.body.classList.remove("is-locked");
+  }
   // Markdown 编辑器：工具栏 + 文本域 + 实时预览，写文章/故事更省心
   function markdownField(labelText, value, rows) {
     const wrap = el("div", "md-editor");
@@ -249,6 +283,8 @@
       ["•", "列表", "- ", ""],
       ["🔗", "链接", "[", "](https://)"],
       ["</>", "代码", "`", "`"],
+      ["∑", "行内公式 $…$", "$", "$"],
+      ["∬", "块级公式 $$…$$", "$$\n", "\n$$"],
     ];
     tools.forEach(([t, title, pre, post]) => {
       const b = el("button", "md-btn");
@@ -260,13 +296,23 @@
       );
       bar.appendChild(b);
     });
+    // Word 风格整页预览按钮
+    const pv = el("button", "md-btn md-preview-open");
+    pv.type = "button";
+    pv.title = "整页预览（Word 风格）";
+    pv.textContent = "👁 预览";
+    pv.addEventListener("click", () => {
+      const area = wrap.querySelector("textarea");
+      openDocPreview(area ? area.value : "");
+    });
+    bar.appendChild(pv);
     // 编辑区 + 预览区
     const ta = textareaInput(value, rows || 6);
     ta.classList.add("md-input");
     ta.placeholder =
-      "支持 Markdown：# 标题、**加粗**、- 列表、> 引用、[链接](url)、`代码`，以及 $公式$";
+      "支持 Markdown：# 标题、**加粗**、- 列表、> 引用、[链接](url)、`代码`，以及 $行内公式$ / $$块级公式$$";
     const prev = el("div", "md-preview md-live");
-    const render = () => { prev.innerHTML = miniMarkdown(ta.value); };
+    const render = () => { prev.innerHTML = miniMarkdown(ta.value); renderMath(prev); };
     ta.addEventListener("input", render);
     render();
     const split = el("div", "md-split");
@@ -489,6 +535,8 @@
     date.placeholder = "日期 2026-09-28";
     const tags = textInput((p.tags || []).join(", ")); // 标签以逗号拼成一行
     tags.placeholder = "标签，逗号分隔";
+    const category = textInput(p.category || "");
+    category.placeholder = "分类，如：设计 / 建站 / 随笔";
     const excerpt = textInput(p.excerpt);
     excerpt.placeholder = "摘要";
     const body = markdownField("正文（支持 Markdown，右侧实时预览）", p.body, 8);
@@ -505,6 +553,7 @@
     item.appendChild(field("标题", title));
     item.appendChild(field("日期", date));
     item.appendChild(field("标签", tags));
+    item.appendChild(field("分类", category));
     item.appendChild(field("摘要", excerpt));
     item.appendChild(body);
     item.appendChild(del);
@@ -521,7 +570,7 @@
     add.textContent = "+ 添加文章";
     add.addEventListener("click", () =>
       list.appendChild(
-        postItem({ title: "新文章", date: "", tags: [], excerpt: "", body: [""] })
+        postItem({ title: "新文章", date: "", tags: [], category: "", excerpt: "", body: [""] })
       )
     );
     pane.appendChild(add);
@@ -707,8 +756,9 @@
       ta.placeholder = "在这里输入 Markdown，右侧实时预览…";
       card.appendChild(ta);
       const out = el("div", "md-preview modal-body");
-      ta.addEventListener("input", () => { out.innerHTML = miniMarkdown(ta.value); });
-      out.innerHTML = miniMarkdown("");
+      const draw = () => { out.innerHTML = miniMarkdown(ta.value); renderMath(out); };
+      ta.addEventListener("input", draw);
+      draw();
       card.appendChild(out);
       grid.appendChild(card);
     })();
@@ -873,8 +923,9 @@
         title: inp[0].value,
         date: inp[1].value,
         tags: linesToArr(inp[2].value),
-        excerpt: inp[3].value,
-        body: linesToArr(inp[4].value),
+        category: (inp[3].value || "").trim(),
+        excerpt: inp[4].value,
+        body: linesToArr(inp[5].value),
       };
     });
   }
@@ -1116,6 +1167,10 @@
   $("#backupModal").addEventListener("click", (e) => {
     if (e.target.hasAttribute("data-close")) closeBackups();
   });
+  $("#previewCloseBtn").addEventListener("click", closeDocPreview);
+  $("#previewModal").addEventListener("click", (e) => {
+    if (e.target.hasAttribute("data-preview-close")) closeDocPreview();
+  });
   $("#exportBtn").addEventListener("click", exportFile);
 
   /* ---------- 快捷键与「未保存」提醒 ---------- */
@@ -1128,6 +1183,8 @@
     if (e.key === "Escape") {
       const m = $("#backupModal");
       if (m && !m.hidden) closeBackups();
+      const p = $("#previewModal");
+      if (p && !p.hidden) closeDocPreview();
     }
   });
   // 有未保存更改时，关闭/刷新页面前弹浏览器确认
