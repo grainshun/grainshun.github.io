@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- 后台管理页面：登录后可视化编辑内容。内容经服务器 API 读写。 -->
+<!-- 后台管理页面：登录后可视化编辑内容。内容经 GitHub API 直接读写仓库（免服务器）。 -->
 <html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
@@ -16,27 +16,24 @@
         <div class="login-logo">A</div>
         <h1>后台登录</h1>
         <p class="login-sub">Anhuann 内容管理</p>
-        <!-- 账号输入 -->
+        <!-- GitHub Token 输入：保存时会用它将 data.js 提交回仓库 -->
         <label class="field">
-          <span class="field-label">账号</span>
-          <input class="input" id="loginUser" type="text" autocomplete="username" />
+          <span class="field-label">GitHub Token</span>
+          <input class="input" id="loginToken" type="password" autocomplete="off" placeholder="粘贴你的 GitHub Personal Access Token" />
         </label>
-        <!-- 密码输入 -->
-        <label class="field">
-          <span class="field-label">密码</span>
-          <input class="input" id="loginPass" type="password" autocomplete="current-password" />
-        </label>
-        <!-- 记住我：勾选后服务器下发更长有效期的会话 Cookie，实现自动登录 -->
+        <!-- 记住我：把 token 存在浏览器会话里，刷新页面不用重填 -->
         <label class="login-remember">
           <input type="checkbox" id="rememberMe" checked />
-          <span>记住我（下次自动登录）</span>
+          <span>记住 Token（仅存本机浏览器）</span>
         </label>
-        <button class="btn btn-primary" id="loginBtn">登录</button>
+        <button class="btn btn-primary" id="loginBtn">进入后台</button>
         <!-- 登录失败时的错误提示（由 JS 写入） -->
         <p class="login-error" id="loginError"></p>
         <p class="login-note">
-          账号密码由服务器校验，登录态保存在 HttpOnly Cookie 中。
-          请通过 <code>node server.js</code> 启动后访问本后台，不要直接把后台暴露到公网。
+          这个后台不连服务器：用你的 GitHub Token（需 <code>repo</code> 权限）直接把改动提交到
+          <code>grainshun.github.io</code> 仓库，实现永久保存。<br />
+          不会生成 Token？打开 <code>github.com/settings/tokens</code> → Generate new token(classic) → 只勾 <code>repo</code> → 复制即可。
+          Token 只存在你浏览器里，不会上传任何第三方。
         </p>
       </div>
     </div>
@@ -91,8 +88,8 @@
         <button class="modal-close" id="backupCloseBtn" type="button" aria-label="关闭"></button>
         <h2 class="backup-title">恢复备份</h2>
         <p class="backup-tip">
-          每次点「保存」前，服务器都会自动备份 <code>data.js</code>（保留最近 5 份）。
-          选择一份恢复后，当前内容会被该备份覆盖（恢复前也会再自动备份一次当前内容）。
+          每次点「保存」都会往 <code>grainshun.github.io</code> 仓库提交一次，Git 历史天然就是备份。
+          这里列出 <code>data.js</code> 的提交记录，点「恢复」即可把某一历史版本覆盖回去（覆盖前当前版本也会保留为新提交）。
         </p>
         <div class="backup-list" id="backupList"></div>
       </div>
