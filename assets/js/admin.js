@@ -32,43 +32,103 @@
     return JSON.parse(JSON.stringify(x));
   }
 
+  /* ---------- GitHub 配置与 API 助手（免服务器，直接提交仓库） ---------- */
+  const GH_OWNER = "grainshun";
+  const GH_REPO = "grainshun.github.io";
+  const GH_BRANCH = "main";
+  const GH_DATA_PATH = "assets/js/data.js";
+  // token 仅存内存与浏览器会话，不写进代码；用于保存时把 data.js 提交回仓库
+  let ghToken = "";
+  function rememberToken(t) {
+    ghToken = t;
+    try { sessionStorage.setItem("anhuann_gh_token", t); } catch (e) {}
+  }
+  function forgetToken() {
+    ghToken = "";
+    try { sessionStorage.removeItem("anhuann_gh_token"); } catch (e) {}
+  }
+  // 通用 GitHub REST 调用，自动带 token
+  async function ghApi(path, opts) {
+    opts = opts || {};
+    const headers = Object.assign(
+      { "Accept": "application/vnd.github+json", "User-Agent": "anhuann-admin" },
+      opts.headers || {}
+    );
+    if (ghToken) headers["Authorization"] = "Bearer " + ghToken;
+    const res = await fetch("https://api.github.com" + path, {
+      method: opts.method || "GET",
+      headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    let json = null, text = "";
+    try { text = await res.text(); json = text ? JSON.parse(text) : null; } catch (e) {}
+    return { status: res.status, json, text };
+  }
+  // 把内容对象生成为完整 data.js 文本（与导出同格式）
+  function buildDataJs(data) {
+    return (
+      "/* =========================================================\n" +
+      "   Anhuann · 内容配置文件（data.js）\n" +
+      "   由后台保存时自动生成并提交到 GitHub 仓库。\n" +
+      "   如需手动修改：编辑后覆盖 assets/js/data.js 即可。\n" +
+      "   ========================================================= */\n\n" +
+      "const SITE = " + jsVal(data.site, 0) + ";\n\n" +
+      "const ABOUT = " + jsVal(data.about, 0) + ";\n\n" +
+      "const POSTS = " + jsVal(data.posts, 0) + ";\n\n" +
+      "const SOCIALS = " + jsVal(data.socials, 0) + ";\n\n" +
+      "const UI = " + jsVal(data.ui || {}, 0) + ";\n"
+    );
+  }
+  // 最近一次读取到的 data.js 的 sha，保存时用于乐观并发控制
+  let currentSha = null;
+  // 从仓库拉取最新 data.js 文本与 sha
+  async function fetchDataJs() {
+    const r = await ghApi("/repos/" + GH_OWNER + "/" + GH_REPO + "/contents/" + GH_DATA_PATH + "?ref=" + GH_BRANCH);
+    if (r.status !== 200 || !r.json) throw new Error("读取仓库 data.js 失败(" + r.status + ")");
+    currentSha = r.json.sha;
+    return base64ToUtf8(r.json.content);
+  }
+  // 用 new Function 把 data.js 解析成内容对象（与 server.js 同源思路）
+  function parseDataJs(text) {
+    const fn = new Function(
+      text + "\nreturn { SITE: SITE, ABOUT: ABOUT, POSTS: POSTS, SOCIALS: SOCIALS, UI: (typeof UI !== 'undefined' ? UI : {}) };"
+    );
+    return fn();
+  }
+
   /* ---------- 当前编辑中的数据（来自服务器） ---------- */
   let DATA = null; // 结构：{ site, about, socials, posts }，渲染与收集都以它为基准
 
-  // 从服务器拉取最新内容，存进 DATA
+  // 从 GitHub 仓库拉取最新 data.js，解析后存进 DATA
   async function loadContent() {
-    const res = await fetch("/api/content", { credentials: "same-origin" });
-    if (!res.ok) throw new Error("load failed");
-    DATA = await res.json();
+    const text = await fetchDataJs();
+    DATA = parseDataJs(text);
   }
 
   /* ---------- 登录相关 DOM 引用 ---------- */
   const loginScreen = $("#loginScreen"); // 登录门禁遮罩
   const adminPanel = $("#adminPanel");   // 登录后的后台主体
 
-  // 处理登录提交：把账号密码发给服务器，成功则载入内容并进入后台
+  // 处理登录提交：用 GitHub Token 验证，成功则载入内容并进入后台
   async function attempt() {
-    const u = $("#loginUser").value.trim();
-    const p = $("#loginPass").value;
-    const remember = $("#rememberMe") && $("#rememberMe").checked; // 是否延长会话
+    const t = ($("#loginToken").value || "").trim();
+    if (!t) {
+      $("#loginError").textContent = "请填写 GitHub Token";
+      return;
+    }
+    const remember = $("#rememberMe") && $("#rememberMe").checked;
     try {
-      const res = await fetch("/api/login", {
-        method: "POST",
-        credentials: "same-origin", // 让登录 Cookie 随同源请求带上
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user: u, pass: p, remember }),
-      });
-      if (res.ok) {
-        await loadContent(); // 登录成功 -> 拉内容
-        showAdmin();         // 进入后台
-      } else {
-        // 服务器返回 401 等：取出错误文案展示
-        const j = await res.json().catch(() => ({}));
-        $("#loginError").textContent = j.error || "登录失败";
+      // 先用 token 调 /user 验证有效性（需 repo 权限）
+      const who = await ghApi("/user");
+      if (who.status !== 200) {
+        $("#loginError").textContent = "Token 无效或无权限，请检查（需 repo 权限）";
+        return;
       }
+      rememberToken(t); // 存入内存/会话
+      await loadContent();
+      showAdmin();
     } catch (e) {
-      // 网络层失败（多半是服务器没启动）
-      $("#loginError").textContent = "网络错误，请确认服务器已启动（node server.js）";
+      $("#loginError").textContent = "网络错误，无法连接 GitHub";
     }
   }
 
@@ -79,21 +139,19 @@
     renderAll();
   }
 
-  // 登出：调用服务器清除会话，并回到登录页（清空密码框与错误提示）
+  // 登出：清除本地 token，回到登录页
   async function logout() {
-    try {
-      await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
-    } catch (e) {}
+    forgetToken();
     adminPanel.hidden = true;
     loginScreen.hidden = false;
-    $("#loginPass").value = "";
+    const tk = $("#loginToken"); if (tk) tk.value = "";
     $("#loginError").textContent = "";
   }
 
   // 绑定按钮/回车事件
   $("#loginBtn").addEventListener("click", attempt);
-  $("#loginPass").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") attempt(); // 密码框回车即登录
+  $("#loginToken").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") attempt(); // token 框回车即登录
   });
   $("#logoutBtn").addEventListener("click", logout);
 
@@ -818,7 +876,7 @@
     return errs.length ? errs.join("；") : null;
   }
 
-  // 保存：校验 -> 收集表单 -> POST /api/content 写回服务器
+  // 保存：校验 -> 收集表单 -> 序列化 data.js -> 提交回 GitHub 仓库
   async function save() {
     const data = collectAll();
     const err = validate(data);
@@ -832,29 +890,42 @@
     btn.disabled = true;
     btn.textContent = "保存中…";
     try {
-      const res = await fetch("/api/content", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
+      const content = buildDataJs(data);
+      const body = {
+        message: "content: update via admin",
+        content: utf8ToBase64(content),
+        branch: GH_BRANCH,
+      };
+      if (currentSha) body.sha = currentSha;
+      let r = await ghApi("/repos/" + GH_OWNER + "/" + GH_REPO + "/contents/" + GH_DATA_PATH, {
+        method: "PUT",
+        body,
       });
-      if (res.ok) {
+      // 并发冲突（sha 过期）：重新拉取最新 sha 再提交一次
+      if (r.status === 409) {
+        await fetchDataJs();
+        body.sha = currentSha;
+        r = await ghApi("/repos/" + GH_OWNER + "/" + GH_REPO + "/contents/" + GH_DATA_PATH, {
+          method: "PUT",
+          body,
+        });
+      }
+      if (r.status >= 200 && r.status < 300) {
+        if (r.json && r.json.content) currentSha = r.json.content.sha;
         clearDirty();
-        refreshHint("已保存到服务器，刷新前台即可生效。");
-        toast("✓ 已保存");
-      } else if (res.status === 401) {
-        // 会话过期：提示并退回登录
-        refreshHint("登录已失效，请重新登录。");
-        toast("登录已失效，请重新登录");
+        refreshHint("已保存到 GitHub，稍后刷新前台即可生效。");
+        toast("✓ 已保存并推送 GitHub");
+      } else if (r.status === 401) {
+        refreshHint("Token 失效，请重新登录。");
+        toast("Token 失效，请重新登录");
         logout();
       } else {
-        const j = await res.json().catch(() => ({}));
-        refreshHint(j.error || "保存失败");
-        toast(j.error || "保存失败");
+        refreshHint("保存失败(" + r.status + ")：" + ((r.json && r.json.message) || ""));
+        toast("保存失败(" + r.status + ")");
       }
     } catch (e) {
-      refreshHint("网络错误，请确认服务器已启动（node server.js）");
-      toast("网络错误，请确认服务器已启动");
+      refreshHint("网络错误，无法连接 GitHub");
+      toast("网络错误，无法连接 GitHub");
     } finally {
       btn.disabled = false;
       btn.textContent = "保存";
@@ -928,85 +999,74 @@
   }
 
   /* ---------- 备份 / 恢复 ---------- */
-  // 打开备份弹窗：拉取服务器上的自动备份列表并渲染
+  // 打开备份弹窗：列出 data.js 的 Git 提交历史（每次保存都是一次提交，天然备份）
   async function openBackups() {
     const modal = $("#backupModal");
     const list = $("#backupList");
-    list.innerHTML = '<p class="backup-empty">正在加载…</p>';
+    list.innerHTML = '<p class="backup-empty">正在加载 Git 历史…</p>';
     modal.hidden = false;
     document.body.classList.add("is-locked"); // 锁定背景滚动
     try {
-      const res = await fetch("/api/backups", { credentials: "same-origin" });
-      if (res.status === 401) {
-        closeBackups();
-        toast("登录已失效，请重新登录");
-        logout();
-        return;
-      }
-      const j = await res.json();
-      const files = (j && j.backups) || [];
-      if (!files.length) {
-        list.innerHTML =
-          '<p class="backup-empty">还没有备份。之后每次点「保存」都会自动生成一份。</p>';
+      const r = await ghApi("/repos/" + GH_OWNER + "/" + GH_REPO + "/commits?path=" + GH_DATA_PATH + "&per_page=20");
+      if (r.status === 401) { closeBackups(); toast("Token 失效，请重新登录"); logout(); return; }
+      const commits = r.json || [];
+      if (!commits.length) {
+        list.innerHTML = '<p class="backup-empty">还没有历史提交。</p>';
         return;
       }
       list.innerHTML = "";
-      files.forEach((f) => {
+      commits.forEach((c) => {
         const row = el("div", "backup-row");
         const info = el("div");
         const nm = el("div", "backup-name");
-        nm.textContent = f.time; // 形如 20261019-200225-080
+        nm.textContent = (c.commit && c.commit.message ? c.commit.message : "(无说明)").split("\n")[0];
         const sz = el("div", "backup-size");
-        sz.textContent = (f.size / 1024).toFixed(1) + " KB";
-        info.appendChild(nm);
-        info.appendChild(sz);
+        sz.textContent = (c.commit && c.commit.author && c.commit.author.date ? c.commit.author.date.replace("T", " ").slice(0, 19) : "");
+        info.appendChild(nm); info.appendChild(sz);
         const btn = el("button", "btn btn-ghost btn-sm");
-        btn.type = "button";
-        btn.textContent = "恢复";
-        btn.addEventListener("click", () => restoreBackup(f.name));
-        row.appendChild(info);
-        row.appendChild(btn);
+        btn.type = "button"; btn.textContent = "恢复";
+        btn.addEventListener("click", () => restoreBackup(c.sha));
+        row.appendChild(info); row.appendChild(btn);
         list.appendChild(row);
       });
     } catch (e) {
-      list.innerHTML =
-        '<p class="backup-empty">加载失败，请确认服务器已启动（node server.js）。</p>';
+      list.innerHTML = '<p class="backup-empty">加载失败，无法连接 GitHub。</p>';
     }
   }
   function closeBackups() {
     $("#backupModal").hidden = true;
     document.body.classList.remove("is-locked");
   }
-  // 用指定备份覆盖当前内容，成功后重新拉取并渲染表单
-  async function restoreBackup(name) {
-    if (!confirm("确定恢复这份备份吗？当前内容会被它覆盖（恢复前也会自动备份一次当前内容）。")) {
+  // 用某次历史提交里的 data.js 覆盖当前内容（覆盖前 GitHub 也会保留当前版本作为新提交）
+  async function restoreBackup(sha) {
+    if (!confirm("确定用这份历史版本覆盖当前内容吗？覆盖前 GitHub 也会保留当前版本作为一次新提交。")) {
       return;
     }
     try {
-      const res = await fetch("/api/restore", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-      if (res.status === 401) {
-        closeBackups();
-        toast("登录已失效，请重新登录");
-        logout();
-        return;
-      }
-      const j = await res.json().catch(() => ({}));
-      if (res.ok) {
-        await loadContent(); // 重新拉取恢复后的内容
+      const r = await ghApi("/repos/" + GH_OWNER + "/" + GH_REPO + "/contents/" + GH_DATA_PATH + "?ref=" + sha);
+      if (r.status !== 200 || !r.json) { toast("读取该版本失败"); return; }
+      const text = base64ToUtf8(r.json.content);
+      const data = parseDataJs(text);
+      const put = {
+        message: "content: restore from history " + sha.slice(0, 8),
+        content: utf8ToBase64(buildDataJs(data)),
+        branch: GH_BRANCH,
+        sha: currentSha,
+      };
+      let pr = await ghApi("/repos/" + GH_OWNER + "/" + GH_REPO + "/contents/" + GH_DATA_PATH, { method: "PUT", body: put });
+      if (pr.status === 409) { await fetchDataJs(); put.sha = currentSha; pr = await ghApi("/repos/" + GH_OWNER + "/" + GH_REPO + "/contents/" + GH_DATA_PATH, { method: "PUT", body: put }); }
+      if (pr.status >= 200 && pr.status < 300) {
+        if (pr.json && pr.json.content) currentSha = pr.json.content.sha;
+        await loadContent();
         renderAll();
-        refreshHint("已恢复备份，并重新载入内容。");
-        toast("✓ 已恢复备份");
+        refreshHint("已恢复历史版本，并重新载入内容。");
+        toast("✓ 已恢复历史版本");
         closeBackups();
       } else {
-        toast(j.error || "恢复失败");
+        toast("恢复失败(" + pr.status + ")");
       }
     } catch (e) {
-      toast("网络错误，请确认服务器已启动");
+      toast("恢复失败：网络错误");
     }
   }
 
@@ -1053,17 +1113,22 @@
     });
   });
 
-  /* ---------- 启动：若已有会话则自动进入后台 ---------- */
+  /* ---------- 启动：若会话里存了 token 则自动进入后台 ---------- */
   (async function boot() {
     try {
-      // 问服务器「我登录了没」；已登录就直接拉内容进后台
-      const res = await fetch("/api/session", { credentials: "same-origin" });
-      if (res.ok) {
-        await loadContent();
-        showAdmin();
+      const saved = (function () { try { return sessionStorage.getItem("anhuann_gh_token"); } catch (e) { return ""; } })();
+      if (saved) {
+        rememberToken(saved);
+        const who = await ghApi("/user");
+        if (who.status === 200) {
+          await loadContent();
+          showAdmin();
+        } else {
+          forgetToken();
+        }
       }
     } catch (e) {
-      /* 未登录或服务器未启动，停留在登录页 */
+      /* 未登录或无法连接，停留在登录页 */
     }
   })();
 })();
