@@ -374,39 +374,96 @@
   function initPosts() {
     const list = $("#postList");
     const empty = $("#postsEmpty");
+    const bar = $("#categoryBar");
 
     // 没有文章时隐藏列表、显示空提示
     if (!POSTS.length) {
       list.hidden = true;
       empty.hidden = false;
+      if (bar) bar.hidden = true;
       return;
     }
 
-    // 渲染每篇文章为一颗可点击的「卡片按钮」，点击打开弹窗
-    list.innerHTML = POSTS.map((p, i) => {
-      const tags = (p.tags || [])
-        .map((t) => `<span class="tag">${escapeHtml(t)}</span>`)
-        .join("");
-      return (
-        `<button class="post-item reveal" type="button" data-index="${i}" ` +
-        `style="transition-delay:${Math.min(i, 4) * 60}ms">` + // 前几张错峰淡入
-        `<span class="post-date">${formatDate(p.date)}</span>` +
-        `<span class="post-main">` +
-        `<span class="post-title">${escapeHtml(p.title)}</span>` +
-        `<span class="post-excerpt">${escapeHtml(p.excerpt || "")}</span>` +
-        `<span class="post-tags">${tags}</span>` +
-        `</span>` +
-        `<span class="post-arrow">${icon("arrowRight")}</span>` +
-        `</button>`
-      );
-    }).join("");
+    let currentCat = "全部"; // 当前选中的分类
 
-    // 列表点击委托：找到被点的卡片，按 data-index 打开对应文章
+    // 汇总所有分类（按出现顺序去重）
+    const cats = [];
+    POSTS.forEach((p) => {
+      const c = (p.category || "").trim() || "未分类";
+      if (cats.indexOf(c) === -1) cats.push(c);
+    });
+
+    // 渲染顶部分类筛选条
+    function renderBar() {
+      if (!bar) return;
+      if (!cats.length) { bar.hidden = true; bar.innerHTML = ""; return; }
+      bar.hidden = false;
+      const all = ["全部"].concat(cats);
+      bar.innerHTML = all
+        .map((c) =>
+          `<button type="button" class="cat-chip${c === currentCat ? " active" : ""}" ` +
+          `data-cat="${escapeHtml(c)}">${escapeHtml(c)}</button>`
+        )
+        .join("");
+    }
+
+    // 按当前分类渲染文章列表（保留原始索引，供弹窗打开）
+    function renderList() {
+      const shown = POSTS.map((p, i) => ({ p, i })).filter(
+        ({ p }) => currentCat === "全部" || ((p.category || "").trim() || "未分类") === currentCat
+      );
+      if (!shown.length) {
+        list.hidden = true;
+        empty.hidden = false;
+        list.innerHTML = "";
+        return;
+      }
+      list.hidden = false;
+      empty.hidden = true;
+      list.innerHTML = shown
+        .map(({ p, i }) => {
+          const cat = (p.category || "").trim();
+          const catBadge = cat ? `<span class="post-cat">${escapeHtml(cat)}</span>` : "";
+          const tags = (p.tags || [])
+            .map((t) => `<span class="tag">${escapeHtml(t)}</span>`)
+            .join("");
+          return (
+            `<button class="post-item reveal" type="button" data-index="${i}" ` +
+            `style="transition-delay:${Math.min(i, 4) * 60}ms">` +
+            `<span class="post-date">${formatDate(p.date)}</span>` +
+            `<span class="post-main">` +
+            `<span class="post-title">${escapeHtml(p.title)}</span>` +
+            catBadge +
+            `<span class="post-excerpt">${escapeHtml(p.excerpt || "")}</span>` +
+            `<span class="post-tags">${tags}</span>` +
+            `</span>` +
+            `<span class="post-arrow">${icon("arrowRight")}</span>` +
+            `</button>`
+          );
+        })
+        .join("");
+    }
+
+    renderBar();
+    renderList();
+
+    // 列表点击委托：找到被点的卡片，按原始索引打开对应文章（只绑一次）
     list.addEventListener("click", (e) => {
       const btn = e.target.closest(".post-item");
       if (!btn) return;
       openPost(Number(btn.dataset.index));
     });
+
+    // 分类筛选点击：切换分类并重渲染（只绑一次）
+    if (bar) {
+      bar.addEventListener("click", (e) => {
+        const chip = e.target.closest(".cat-chip");
+        if (!chip) return;
+        currentCat = chip.dataset.cat;
+        renderBar();
+        renderList();
+      });
+    }
   }
 
   /* ---------- 极简 Markdown 渲染（与后台预览保持一致） ---------- */
@@ -490,9 +547,11 @@
 
     lastFocused = document.activeElement;
     $("#modalDate").textContent = formatDateLong(post.date);
-    $("#modalTags").innerHTML = (post.tags || [])
-      .map((t) => `<span class="tag">${escapeHtml(t)}</span>`)
-      .join("");
+    $("#modalTags").innerHTML =
+      (post.category ? `<span class="modal-cat">${escapeHtml(post.category)}</span>` : "") +
+      (post.tags || [])
+        .map((t) => `<span class="tag">${escapeHtml(t)}</span>`)
+        .join("");
     $("#modalTitle").textContent = post.title;
     // 正文：按 Markdown 渲染（与后台预览一致），保留 $...$ 公式
     const bodySrc = Array.isArray(post.body) ? post.body.join("\n") : String(post.body || "");
